@@ -23,6 +23,9 @@ class listener implements EventSubscriberInterface
 	/** @var \phpbb\auth\auth */
 	protected $auth;
 
+	/** @var \phpbb\request\request_interface */
+	protected $request;
+
 	/** @var \phpbb\template\template */
 	protected $template;
 
@@ -34,17 +37,19 @@ class listener implements EventSubscriberInterface
 	*
 	* @param \phpbb\db\driver\driver_interface    $db               DBAL object
 	* @param \phpbb\auth\auth                     $auth             Auth object
+	* @param \phpbb\request\request_interface     $request          Request object
 	* @param \phpbb\template\template             $template         Template object
 	* @param \phpbb\user                          $user             User object
 	* @return \rxu\FirstPostOnEveryPage\event\listener
 	* @access public
 	*/
-	public function __construct(\phpbb\db\driver\driver_interface $db, \phpbb\auth\auth $auth, \phpbb\template\template $template, \phpbb\user $user)
+	public function __construct(\phpbb\db\driver\driver_interface $db, \phpbb\auth\auth $auth, \phpbb\request\request_interface $request, \phpbb\template\template $template, \phpbb\user $user)
 	{
+		$this->db = $db;
+		$this->auth = $auth;
+		$this->request = $request;
 		$this->template = $template;
 		$this->user = $user;
-		$this->auth = $auth;
-		$this->db = $db;
 	}
 
 	static public function getSubscribedEvents()
@@ -71,17 +76,23 @@ class listener implements EventSubscriberInterface
 	{
 		global $post_data;
 		$data = $event['data'];
-		$post_id = $data['post_id'];
-		$topic_id = $data['topic_id'];
-		$forum_id = $data['forum_id'];
+		$post_id = (int) $data['post_id'];
+		$topic_id = (int) $data['topic_id'];
+		$forum_id = (int) $data['forum_id'];
 		$mode = $event['mode'];
 
-		$first_post_always_show = (bool) (isset($post_data['first_post_always_show']) && $post_data['first_post_always_show']);
-		$topic_first_post_show = ($first_post_always_show || isset($_POST['topic_first_post_show']));
+		// Set initial value for the new topic
+		$post_data['topic_first_post_show'] = (isset($post_data['topic_first_post_show'])) ? $post_data['topic_first_post_show'] : 0;
+
+		// Check if the checkbox has been checked
+		$topic_first_post_show = isset($_POST['topic_first_post_show']);
+
 		// Show/Unshow first post on every page
 		if (($mode == 'edit' && $post_id == $data['topic_first_post_id']) || $mode == 'post')
 		{
-			$perm_show_unshow = ($this->auth->acl_get('m_lock', $forum_id) || ($this->auth->acl_get('f_user_lock', $forum_id) && $this->user->data['is_registered'] && !empty($data['topic_poster']) && $this->user->data['user_id'] == $data['topic_poster'])) ? true : false;
+			$perm_show_unshow = ($this->auth->acl_get('m_lock', $forum_id) ||
+				($this->auth->acl_get('f_user_lock', $forum_id) && $this->user->data['is_registered'] && !empty($post_data['poster_id']) && $this->user->data['user_id'] == $post_data['poster_id'])
+			);
 
 			if ($post_data['topic_first_post_show'] != $topic_first_post_show && $perm_show_unshow)
 			{
@@ -124,16 +135,19 @@ class listener implements EventSubscriberInterface
 		$this->user->add_lang_ext('rxu/FirstPostOnEveryPage', 'first_post_on_every_page');
 
 		// Do show show first post on every page checkbox only in first post
-		$first_post_show_allowed = false;
-		if (($mode == 'edit' && $post_id == $post_data['topic_first_post_id']) || $mode == 'post')
+		$first_post_show_allowed = $first_post_always_show = false;
+		if ((($mode == 'edit' && $post_id == $post_data['topic_first_post_id']) || $mode == 'post')
+			&& ($this->auth->acl_get('m_lock', $forum_id)
+				|| ($this->auth->acl_get('f_user_lock', $forum_id) && $this->user->data['is_registered'] && !empty($post_data['poster_id']) && $this->user->data['user_id'] == $post_data['poster_id'])))
 		{
 			$first_post_show_allowed = true;
+			$first_post_always_show = isset($post_data['first_post_always_show']) && (int) $post_data['first_post_always_show'] == 1;
 		}
-		$first_post_always_show = isset($post_data['first_post_always_show']) && $post_data['first_post_always_show'] == 1;
+
 		$first_post_show_checked = (isset($post_data['topic_first_post_show'])) ? $post_data['topic_first_post_show'] : 0;
 		$this->template->assign_vars(array(
-			'S_FIRST_POST_SHOW_ALLOWED'		=> ($first_post_always_show || ($first_post_show_allowed  && ($this->auth->acl_get('m_lock', $forum_id) || ($this->auth->acl_get('f_user_lock', $forum_id) && $this->user->data['is_registered'] && !empty($post_data['topic_poster']) && $this->user->data['user_id'] == $post_data['topic_poster'])))) ? true : false,
-			'S_FIRST_POST_SHOW_CHECKED'		=> ($first_post_always_show ||$first_post_show_checked) ? ' checked="checked"' : '',
+			'S_FIRST_POST_SHOW_ALLOWED'		=> $first_post_always_show || $first_post_show_allowed,
+			'S_FIRST_POST_SHOW_CHECKED'		=> ($first_post_always_show || $first_post_show_checked) ? ' checked="checked"' : '',
 			'S_FIRST_POST_SHOW_READONLY'	=> ($first_post_always_show) ? ' disabled="disabled"' : '',
 		));
 	}
@@ -154,7 +168,7 @@ class listener implements EventSubscriberInterface
 		$forum_data = $event['forum_data'];
 
 		$forum_data += array(
-			'first_post_always_show'	=> request_var('first_post_always_show', 0),
+			'first_post_always_show'	=> $this->request->variable('first_post_always_show', 0),
 		);
 
 		$event['forum_data'] = $forum_data;
